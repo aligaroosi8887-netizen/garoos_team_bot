@@ -5,205 +5,135 @@ from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     CallbackQueryHandler,
-    ContextTypes
+    ContextTypes,
+    MessageHandler,
+    filters,
 )
+from datetime import datetime
 
-# ==========================
-# تنظیمات محیطی
-# ==========================
-ADMIN_ID = int(os.environ.get("ADMIN_ID", "130197808"))
-CHAT_ID = int(os.environ.get("CHAT_ID", "-1002655310937"))
-TOPIC_THREAD_ID = int(os.environ.get("TOPIC_THREAD_ID", "40"))
+# گرفتن توکن از Environment Variable
 TOKEN = os.environ.get("BOT_TOKEN", "")
-REMINDER_INTERVAL_SECONDS = int(os.environ.get("REMINDER_INTERVAL_SECONDS", str(60*60*12)))
+if not TOKEN:
+    raise ValueError("توکن ربات تنظیم نشده! لطفاً BOT_TOKEN را در Environment Variable قرار دهید.")
 
-# ==========================
-# داده‌ها
-# ==========================
-members = []
-active_members = []
-payments = {}
-current_cost = 0
-current_date = ""
-session_active = False
+# داده‌ها را داخل دیکشنری نگه می‌داریم
+members = {}
+costs = []
+paid = {}
 
-# ==========================
-# توابع اصلی
-# ==========================
+# ======== دستورات ربات ========
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("دسترسی فقط برای مدیر مجاز است.")
-        return
-    await update.message.reply_text("ربات فعال شد ✅\nدستور /help برای مشاهده‌ی راهنما را بزنید.")
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = (
-        "📘 دستورات ربات:\n\n"
-        "/addmember <نام> — افزودن عضو جدید\n"
-        "/members — نمایش لیست اعضا\n"
-        "/selectmembers — انتخاب اعضای فعال برای دوره‌ی جدید\n"
-        "/setcost <مبلغ> <تاریخ> — ثبت هزینه‌ی جدید\n"
-        "/pay <نام> <مبلغ> — ثبت پرداخت عضو\n"
-        "/status — نمایش وضعیت پرداخت‌ها\n"
-        "/reset — پایان و ریست دوره\n"
+    await update.message.reply_text(
+        "سلام! ربات هزینه کافه آماده است.\n"
+        "دستورات:\n"
+        "/addmember نام\n"
+        "/listmembers\n"
+        "/addcost مبلغ [تاریخ]\n"
+        "/pay نام\n"
+        "/status\n"
+        "/reset"
     )
+
+# افزودن عضو
+async def add_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if len(context.args) == 0:
+        await update.message.reply_text("لطفاً نام عضو را بنویسید: /addmember علی")
+        return
+    name = context.args[0]
+    if name not in members:
+        members[name] = 0
+        paid[name] = 0
+        await update.message.reply_text(f"عضو {name} اضافه شد.")
+    else:
+        await update.message.reply_text(f"{name} قبلاً اضافه شده است.")
+
+# نمایش لیست اعضا
+async def list_members(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not members:
+        await update.message.reply_text("هیچ عضوی اضافه نشده است.")
+        return
+    text = "اعضا:\n"
+    for name in members:
+        text += f"- {name}\n"
     await update.message.reply_text(text)
 
-async def add_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    try:
-        name = " ".join(context.args)
-        if not name:
-            await update.message.reply_text("❗ نام عضو را بنویسید. مثال: /addmember علی")
-            return
-        if name in members:
-            await update.message.reply_text("این عضو قبلاً اضافه شده است.")
-        else:
-            members.append(name)
-            await update.message.reply_text(f"✅ عضو «{name}» اضافه شد.")
-    except Exception as e:
-        await update.message.reply_text(f"خطا در افزودن عضو: {e}")
-
-async def show_members(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not members:
-        await update.message.reply_text("هنوز عضوی اضافه نشده است.")
-    else:
-        text = "👥 اعضا:\n" + "\n".join([f"• {m}" for m in members])
-        await update.message.reply_text(text)
-
-async def select_members(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    if not members:
-        await update.message.reply_text("ابتدا با /addmember اعضا را اضافه کنید.")
-        return
-
-    keyboard = [
-        [InlineKeyboardButton(f"{'✅' if m in active_members else '⬜️'} {m}", callback_data=f"toggle_{m}")]
-        for m in members
-    ]
-    keyboard.append([InlineKeyboardButton("تأیید", callback_data="confirm_selection")])
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("اعضای فعال را انتخاب کنید:", reply_markup=reply_markup)
-
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    data = query.data
-    global active_members
-    if data.startswith("toggle_"):
-        name = data.split("_",1)[1]
-        if name in active_members:
-            active_members.remove(name)
-        else:
-            active_members.append(name)
-        await select_members(update, context)
-    elif data == "confirm_selection":
-        if not active_members:
-            await query.edit_message_text("هیچ عضوی انتخاب نشده است.")
-            return
-        await query.edit_message_text("✅ اعضای فعال انتخاب شدند:\n" + "\n".join(active_members))
-
-async def set_cost(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global current_cost, current_date, payments, session_active
-    if update.effective_user.id != ADMIN_ID:
+# افزودن هزینه
+async def add_cost(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if len(context.args) == 0:
+        await update.message.reply_text("لطفاً مبلغ را وارد کنید: /addcost 550000 [22-07-1402]")
         return
     try:
         amount = int(context.args[0])
-        date = " ".join(context.args[1:]) if len(context.args) > 1 else "نامشخص"
-        current_cost = amount
-        current_date = date
-        payments = {m:0 for m in active_members}
-        session_active = True
-        if not active_members:
-            await update.message.reply_text("هیچ عضو فعالی انتخاب نشده است.")
-            return
-        share = amount / len(active_members)
-        text = f"💰 هزینه جدید ثبت شد:\nمبلغ کل: {amount:,} تومان\nتاریخ: {date}\nتعداد اعضا: {len(active_members)}\nسهم هر نفر: {share:,.0f} تومان"
-        await update.message.reply_text(text)
-    except Exception:
-        await update.message.reply_text("فرمت اشتباه است.\nمثال: /setcost 550000 چهارشنبه 22 مهر")
+    except:
+        await update.message.reply_text("مبلغ باید عدد باشد.")
+        return
+    date_str = " ".join(context.args[1:]) if len(context.args) > 1 else datetime.now().strftime("%Y-%m-%d")
+    costs.append({"amount": amount, "date": date_str})
+    # به صورت مساوی بین اعضا تقسیم می‌کنیم
+    if members:
+        share = amount / len(members)
+        for name in members:
+            members[name] += share
+        await update.message.reply_text(f"هزینه {amount} ثبت شد.\nهر نفر {share} پرداخت دارد.")
+    else:
+        await update.message.reply_text("ابتدا اعضا را اضافه کنید.")
 
+# ثبت پرداخت
 async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global payments, current_cost
-    if not session_active:
-        await update.message.reply_text("هیچ هزینه‌ای فعال نیست.")
+    if len(context.args) == 0:
+        await update.message.reply_text("لطفاً نام خود را وارد کنید: /pay علی")
         return
-    try:
-        name = context.args[0]
-        amount = int(context.args[1])
-        if name not in active_members:
-            await update.message.reply_text("این نام در بین اعضای فعال نیست.")
-            return
-        payments[name] += amount
-        await update.message.reply_text(f"💵 پرداخت ثبت شد: {name} → {amount:,} تومان")
-        await status(update, context)
-        share = current_cost / len(active_members)
-        if all(payments[m] >= share for m in active_members):
-            await update.message.reply_text(f"✅ همه پرداخت کردند. هزینه‌ی {current_cost:,} تومان در تاریخ {current_date} تسویه شد.")
-    except Exception:
-        await update.message.reply_text("فرمت اشتباه است.\nمثال: /pay علی 100000")
-
-async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not session_active:
-        await update.message.reply_text("فعلاً هیچ هزینه‌ای ثبت نشده است.")
+    name = context.args[0]
+    if name not in members:
+        await update.message.reply_text(f"{name} عضو ثبت شده نیست.")
         return
-    share = current_cost / len(active_members)
-    text = f"📊 وضعیت پرداخت‌ها ({current_date}):\n\n"
-    for m in active_members:
-        paid = payments[m]
-        remaining = share - paid
-        if remaining <= 0:
-            text += f"✅ {m} تسویه کرده ({paid:,.0f})\n"
-        else:
-            text += f"💸 {m} — پرداخت: {paid:,.0f} / مانده: {remaining:,.0f}\n"
+    # پرداخت کل سهم
+    paid[name] += members[name]
+    members[name] = 0
+    await update.message.reply_text(f"{name} پرداخت انجام داد.")
+    # نمایش وضعیت
+    text = "وضعیت پرداخت:\n"
+    total_remaining = 0
+    for n, amt in members.items():
+        text += f"{n}: {amt} مانده، پرداخت شده: {paid[n]}\n"
+        total_remaining += amt
+    if total_remaining == 0:
+        text += "\n✅ کل هزینه تسویه شد!"
     await update.message.reply_text(text)
 
-async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global payments, current_cost, current_date, session_active
-    if update.effective_user.id != ADMIN_ID:
+# نمایش وضعیت کل اعضا
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not members:
+        await update.message.reply_text("هیچ عضوی اضافه نشده است.")
         return
-    payments = {}
-    current_cost = 0
-    current_date = ""
-    session_active = False
-    await update.message.reply_text("🔄 دوره‌ی فعلی پایان یافت و داده‌ها ریست شد.")
+    text = "وضعیت فعلی:\n"
+    total_remaining = 0
+    for n, amt in members.items():
+        text += f"{n}: {amt} مانده، پرداخت شده: {paid[n]}\n"
+        total_remaining += amt
+    if total_remaining == 0 and members:
+        text += "\n✅ کل هزینه تسویه شد!"
+    await update.message.reply_text(text)
 
-# ==========================
-# یادآوری خودکار
-# ==========================
-async def reminder_loop(app):
-    while True:
-        if session_active:
-            share = current_cost / len(active_members)
-            text = "⏰ یادآوری پرداخت:\n\n"
-            for m in active_members:
-                remaining = share - payments[m]
-                if remaining > 0:
-                    text += f"🔹 {m} — مانده: {remaining:,.0f}\n"
-            if text.strip() != "⏰ یادآوری پرداخت:":
-                await app.bot.send_message(chat_id=CHAT_ID, text=text, message_thread_id=TOPIC_THREAD_ID)
-        await asyncio.sleep(REMINDER_INTERVAL_SECONDS)
+# ریست کردن همه داده‌ها
+async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    members.clear()
+    costs.clear()
+    paid.clear()
+    await update.message.reply_text("تمام اطلاعات ریست شد.")
 
-# ==========================
-# اجرای برنامه
-# ==========================
-if __name__ == "__main__":
-    app = ApplicationBuilder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("addmember", add_member))
-    app.add_handler(CommandHandler("members", show_members))
-    app.add_handler(CommandHandler("selectmembers", select_members))
-    app.add_handler(CommandHandler("setcost", set_cost))
-    app.add_handler(CommandHandler("pay", pay))
-    app.add_handler(CommandHandler("status", status))
-    app.add_handler(CommandHandler("reset", reset))
-    app.add_handler(CallbackQueryHandler(button_handler))
+# ======== راه‌اندازی ربات ========
+app = ApplicationBuilder().token(TOKEN).build()
 
-    # شروع حلقه یادآوری خودکار
-    app.job_queue.run_once(lambda ctx: asyncio.create_task(reminder_loop(app)), 5)
+app.add_handler(CommandHandler("start", start))
+app.add_handler(CommandHandler("addmember", add_member))
+app.add_handler(CommandHandler("listmembers", list_members))
+app.add_handler(CommandHandler("addcost", add_cost))
+app.add_handler(CommandHandler("pay", pay))
+app.add_handler(CommandHandler("status", status))
+app.add_handler(CommandHandler("reset", reset))
 
-    print("🤖 ربات اجرا شد ...")
-    app.run_polling()
+print("🤖 ربات اجرا شد...")
+
+app.run_polling()
